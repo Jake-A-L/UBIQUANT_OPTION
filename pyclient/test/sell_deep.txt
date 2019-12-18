@@ -1,0 +1,7 @@
+        deep_out_put = ['P050', 'P052', 'P054']
+        deep_out_call = ['C150', 'C146', 'C142']
+        deep = deep_out_put + deep_out_call
+        for deepID in deep:
+            order_sell_deep = self.ins2om[deepID].place_market_order(self.next_order_ref(), PHX_FTDC_D_Sell,
+                                                               PHX_FTDC_OF_Open, 50)
+            self.send_input_order(order_sell_deep)

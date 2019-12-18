@@ -1,0 +1,19 @@
+    def run_strategy(self):
+ 
+        ins_i = 10
+        test_data = self.md_list[self.ins2index[self.instruments[ins_i].InstrumentID]]
+        if len(test_data) != 0:
+            print(test_data[-1])
+            best_ask = test_data[-1].BidPrice1
+            best_bid = test_data[-1].AskPrice1
+            ins = self.instruments[ins_i]
+            om = self.ins2om[ins.InstrumentID]
+            order_buy = om.place_limit_order(self.next_order_ref(), PHX_FTDC_D_Buy, PHX_FTDC_OF_Open, best_bid-0.01, 10)
+            order_sell = om.place_limit_order(self.next_order_ref(), PHX_FTDC_D_Sell, PHX_FTDC_OF_Open, best_ask+0.01, 10)
+            self.send_input_order(order_buy)
+            self.send_input_order(order_sell)
+
+
+        self.market_data_updated[ins_i] = False  # reset flag
+        
+        self.is_any_updated = False  # reset flag
