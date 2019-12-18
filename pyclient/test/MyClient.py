@@ -12,7 +12,7 @@ from random import randint, random
 from test.OrderList import OrderList, OrderInfo, Snapshot
 import threading
 import copy
-
+import signal
 
 class MyClient(CPhxFtdcTraderSpi):
     def __init__(self):
@@ -39,6 +39,7 @@ class MyClient(CPhxFtdcTraderSpi):
         self.market_data_updated = []
         self._background = None
         self.m_pUserApi = CPhxFtdcTraderApi()
+        self._is_background_started = False
 
     def reset(self):
         """Reset function after each round"""
@@ -65,27 +66,14 @@ class MyClient(CPhxFtdcTraderSpi):
         field = CPhxFtdcReqUserLoginField()
         field.UserID = self.m_UserID
         field.Password = self.m_Passwd
-        field.ParticipantID = "1"
         ret = self.m_pUserApi.ReqUserLogin(field, PHX_LINK_TYPE_Order, self.next_request_id())
         print("ReqUserLogin Order (%s:%d) ret=%d" % (self.serverHost, self.serverOrderPort, ret))
         ret = self.m_pUserApi.ReqUserLogin(field, PHX_LINK_TYPE_Qry, self.next_request_id())
         print("ReqUserLogin Qry (%s:%d) ret=%d" % (self.serverHost, self.serverQryPort, ret))
         ret = self.m_pUserApi.ReqUserLogin(field, PHX_LINK_TYPE_Rtn, self.next_request_id())
-        print("ReqUserLogin Rtn  (%s:%d) ret=%d" % (self.serverHost, self.serverRtnPort, ret))
+        print("ReqUserLogin Rtn (%s:%d) ret=%d" % (self.serverHost, self.serverRtnPort, ret))
         ret = self.m_pUserApi.ReqUserLogin(field, PHX_LINK_TYPE_MD, self.next_request_id())
         print("ReqUserLogin MD (%s:%d) ret=%d" % (self.serverHost, self.serverMDPort, ret))
-
-    def ReqUserLogout(self):
-        field = CPhxFtdcReqUserLogoutField()
-        field.UserID = self.m_UserID
-        ret = self.m_pUserApi.ReqUserLogout(field, PHX_LINK_TYPE_Order, self.next_request_id())
-        print("ReqUserLogout Order (%s:%d) ret=%d" % (self.serverHost, self.serverOrderPort, ret))
-        ret = self.m_pUserApi.ReqUserLogout(field, PHX_LINK_TYPE_Qry, self.next_request_id())
-        print("ReqUserLogout Qry (%s:%d) ret=%d" % (self.serverHost, self.serverQryPort, ret))
-        ret = self.m_pUserApi.ReqUserLogout(field, PHX_LINK_TYPE_Rtn, self.next_request_id())
-        print("ReqUserLogout Rtn  (%s:%d) ret=%d" % (self.serverHost, self.serverRtnPort, ret))
-        ret = self.m_pUserApi.ReqUserLogout(field, PHX_LINK_TYPE_MD, self.next_request_id())
-        print("ReqUserLogout MD (%s:%d) ret=%d" % (self.serverHost, self.serverMDPort, ret))
 
     def OnRspUserLogin(self, pRspUserLogin: CPhxFtdcRspUserLoginField, LinkType, ErrorID, nRequestID):
         print('OnRspUserLogin, data=%s, ErrorID=%d, ErrMsg=%s, nRequestID=%d' % (json.dumps(pRspUserLogin.__dict__), ErrorID, get_server_error(ErrorID), nRequestID))
@@ -229,6 +217,7 @@ class MyClient(CPhxFtdcTraderSpi):
             print("ReqQryTrade failed")
             return False
 
+        self._is_background_started = True
         self._background = threading.Thread(target=self.background_thread)
         self._background.start()
         if not self.timeout_wait(10):
@@ -240,13 +229,20 @@ class MyClient(CPhxFtdcTraderSpi):
         last_time = time.time()
         field = CPhxFtdcQryClientAccountField()
         while True:
+            if not self._is_background_started:
+                break
             t = time.time()
             if t - last_time > 5 and self.m_pUserApi.all_connected:
                 last_time = t
                 ret = self.m_pUserApi.ReqQryTradingAccount(field, self.next_request_id())
                 if not ret:
                     print("ReqQryTradingAccount failed")
-            time.sleep(1)
+            time.sleep(0.5)
+
+    def stop_all_threads(self):
+        self.m_pUserApi.stop()
+        self._is_background_started = False
+        time.sleep(0.6)
 
     def random_direction(self):
         if randint(0, 1) == 0:
@@ -299,12 +295,6 @@ class MyClient(CPhxFtdcTraderSpi):
         for order in asks:
             self.send_cancel_order(order)
 
-
-    def include_strategy(self,strategy):
-        self.strategy = strategy
-        print("Strategy added to Client")
-
-    # STRATEGY
     def run_strategy(self):
         # FOR_EACH_INSTRUMENT
         for i in range(self.inst_num):
@@ -347,11 +337,16 @@ if __name__ == '__main__':
     client.m_UserID = user_id
     client.m_Passwd = password
 
+    def _KeyboardInterruptHandler(signal, frame):
+        print("KeyboardInterrupt (ID: {}) has been caught. Cleaning up...".format(signal))
+        client.stop_all_threads()
+        exit(0)
+
+    signal.signal(signal.SIGINT, _KeyboardInterruptHandler)
+
     if client.Init():
         print("init success")
         resetted = True
-        MAX_ITER = 1
-        iter = 0
         while True:
             if client.game_status is None or (not client.m_pUserApi.all_connected):
                 print("server not started")
@@ -361,7 +356,6 @@ if __name__ == '__main__':
                 time.sleep(1)
             elif client.game_status.GameStatus == 1:
                 resetted = False
-                print("Ready to run strategy")
                 client.run_strategy()
                 time.sleep(0.5)
             elif client.game_status.GameStatus == 2:
@@ -379,5 +373,7 @@ if __name__ == '__main__':
                 break
     else:
         print("init failed")
-    print(2)
+
+
+
 
