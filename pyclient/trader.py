@@ -14,7 +14,9 @@ import threading
 import copy
 import pandas as pd
 import math
+import signal
 
+pd.set_option('display.max_rows',None)
 
 class MyClient(CPhxFtdcTraderSpi):
     def __init__(self):
@@ -47,6 +49,10 @@ class MyClient(CPhxFtdcTraderSpi):
                             110, 114, 118, 122, 126, 130, 134, 138, 142, 146,
                             150]
         self.sem = threading.Semaphore(True)
+        self.position = []
+        self.table = None
+        self.counter = 0
+
         """
         Initiate API
         """
@@ -110,7 +116,7 @@ class MyClient(CPhxFtdcTraderSpi):
 
     def OnRspOrderInsert(self, pInputOrder: CPhxFtdcInputOrderField, ErrorID):
         if ErrorID != 0:
-            print('OnRspOrderInsert, orderRef=%d, ErrorID=%d, ErrMsg=%s' % (pInputOrder.OrderLocalID, ErrorID, get_server_error(ErrorID)))
+            #print('OnRspOrderInsert, orderRef=%d, ErrorID=%d, ErrMsg=%s' % (pInputOrder.OrderLocalID, ErrorID, get_server_error(ErrorID)))
             if pInputOrder.InstrumentID not in self.ins2om:
                 return
             om = self.ins2om[pInputOrder.InstrumentID]
@@ -120,9 +126,20 @@ class MyClient(CPhxFtdcTraderSpi):
         if ErrorID != 0:
             print('OnRspOrderAction, orderRef=%d, ErrorID=%d, ErrMsg=%s' % (pInputOrderAction.OrderLocalID, ErrorID, get_server_error(ErrorID)))
 
+    def OnRspQryInvestorPosition(self, pInvestorPosition: CPhxFtdcRspClientPositionField, ErrorID, nRequestID, bIsLast):
+        #print('OnRspQryInvestorPosition, ErrorID=%d, bIsLast=%d' % (ErrorID, bIsLast))
+        try:
+            self.position.append(pd.Series(pInvestorPosition.__dict__))
+        except AttributeError:
+            print("Position Information Not Available")
+
+    def OnRspQryInstrumentMarginRate(self, pInstrumentMarginRate: CPhxFtdcRspInstrumentMarginRateField, ErrorID, nRequestID, bIsLast):
+        print('OnRspQryInstrumentMarginRate, data=%s, ErrorID=%d, bIsLast=%d' % (json.dumps(pInstrumentMarginRate.__dict__), ErrorID, bIsLast))
+
+
     def OnRspQryTradingAccount(self, pTradingAccount: CPhxFtdcRspClientAccountField, ErrorID, nRequestID, bIsLast):
         print('OnRspQryTradingAccount, ErrorID=%d, ErrMsg=%s, bIsLast=%d' % (ErrorID, get_server_error(ErrorID), bIsLast))
-        print(pd.Series(pTradingAccount.__dict__))
+        print(pd.Series(pTradingAccount.__dict__),end = '')
 
     def OnRspQryInstrument(self, pInstrument: CPhxFtdcRspInstrumentField, ErrorID, nRequestID, bIsLast):
         # print('OnRspQryInstrument, data=%s, ErrorID=%d, bIsLast=%d' % (json.dumps(pInstrument.__dict__), ErrorID, bIsLast))
@@ -251,18 +268,6 @@ class MyClient(CPhxFtdcTraderSpi):
             return False
         return True
 
-    def random_direction(self):
-        if randint(0, 1) == 0:
-            return PHX_FTDC_D_Buy
-        else:
-            return PHX_FTDC_D_Sell
-
-    def random_offset(self):
-        if randint(0, 1) == 0:
-            return PHX_FTDC_OF_Open
-        else:
-            return PHX_FTDC_OF_Close
-
     def send_input_order(self, order: OrderInfo):
         field = CPhxFtdcQuickInputOrderField()
         field.OrderPriceType = order.OrderPriceType
@@ -277,7 +282,7 @@ class MyClient(CPhxFtdcTraderSpi):
             field.LimitPrice = order.LimitPrice
         field.OrderLocalID = order.OrderLocalID
         ret = self.m_pUserApi.ReqQuickOrderInsert(field, self.next_request_id())
-       #print("QuickOrderInsert ", field, ret)
+        #print("QuickOrderInsert ", field, ret)
 
     def send_cancel_order(self, order: OrderInfo):
         field = CPhxFtdcOrderActionField()
@@ -304,6 +309,30 @@ class MyClient(CPhxFtdcTraderSpi):
                 print("ReqQryClientPosition failed")
         else:
             print("Not Connected")
+        try:
+            if len(self.position) != 0:
+                temp = pd.DataFrame(self.position)
+                temp = temp.sort_values(by = ['UseMargin','Position'],ascending=False)
+                print(temp.loc[:,['InstrumentID','Position','PosiDirection','UseMargin','HedgeFlag']])
+            elif self.counter < 3:
+                time.sleep(0.1)
+                self.counter += 1
+                self.check_position()
+            else:
+                self.counter = 0
+                print('No Position yet.')
+        except:
+            pass
+
+            #self.check_position()
+
+    def check_margin(self):
+        print("Check Margin")
+        field = CPhxFtdcQryInstrumentMarginRateField()
+        if self.m_pUserApi.all_connected:
+            ret= self.m_pUserApi.ReqQryInstrumentMarginRate(field, self.next_request_id())
+            if not ret:
+                print("ReqQryInstrumentMarginRate failed")
 
     def orders(self):
         print("Orders")
@@ -315,20 +344,25 @@ class MyClient(CPhxFtdcTraderSpi):
         else:
             print("Not Connected")
 
-    def get_instruments(self):
-        field1 = CPhxFtdcQryInstrumentField()
-        field2 = CPhxFtdcQryInstrumentStatusField()
+
+    def trades(self):
+        print("Trades")
+        field = CPhxFtdcQryOrderField()
         if self.m_pUserApi.all_connected:
-            ret1 = self.m_pUserApi.ReqQryInstrument(field1,self.next_request_id())
-            if not ret1:
-                print("ReqQryInstrument failed")
-            ret2 = self.m_pUserApi.ReqQryInstrumentStatus(field2, self.next_request_id())
-            if not ret2:
-                print("ReqQryInstrumentStatus failed")
+            ret = self.m_pUserApi.ReqQryTrade(field, self.next_request_id())
+            if not ret:
+                print("ReqQryTrade failed")
         else:
             print("Not Connected")
 
+    def _get_order(self):
+        ins = input("Which Instrument?")
+        ins = self.ins2om[ins]
+        try:
+            print("BID LIST:")
 
+        except:
+            print("Wrong Index.")
     def convert_md(self,pMarketData:CPhxFtdcDepthMarketDataField):
         df_dict = {
             "LastPrice":[pMarketData.LastPrice], "LastVolume":[pMarketData.LastVolume], "ExchangeTime":[pMarketData.ExchangeTime], "InstrumentID":[pMarketData.InstrumentID],
@@ -340,9 +374,6 @@ class MyClient(CPhxFtdcTraderSpi):
         }
         return pd.DataFrame(df_dict)
 
-    def download_md(self,ins_idx):
-        pass
-
     def get_latest_md(self, ins_idx):
         if self.md_list[ins_idx]:
             return self.convert_md(self.md_list[ins_idx][-1])
@@ -350,42 +381,43 @@ class MyClient(CPhxFtdcTraderSpi):
             print("ins_idx %d no deep market data" % (ins_idx))
             return None
 
+    def background_handle(self,signal,frame):
+        print("KeyboardInterrupt (ID:{}) was caught.".format(signal))
+        client.switch = False
+
+
     def background_control(self):
+
         self.sem.acquire()
-        print(self.switch)
         while self.switch:
-            self.check_account()
+            #print(3)
+            print(self.switch)
+            #while self.switch:
             print(self._get_price(['UBIQ'])['UBIQ']['ask'])
-            time.sleep(5)
-            move = input("Add or Kill?")
-            if move == 'c':
-                self.clear()
-                print("Position Cleared.")
-            elif move == 'k':
-                #Kill All Threads
-                self.switch = False
-            elif move == 'm':
-                ids = input("ID?")
-                ids = [int(idx) for idx in ids.split(",")]
-                temp = []
-                for id in ids:
-                    if id < 73 and id >0:
-                        try:
-                            temp.append(client.get_latest_md(id))
-                        except AttributeError:
-                            print("{} No latest MD".format(id))
-                    else:
-                        print("Invalid ID")
-                print(pd.concat(temp).T)
-            self.sem.release()
+            self.check_account()
+            self.check_position()
+            time.sleep(20)
+            # if time.time() - t0 > 1:
+            #     continue
+            # elif move == 'c':
+            #     self.clear()
+            #     print("Position Cleared.")
+            # elif move == 'k':
+            #     #Kill All Threads
+            #     self.switch = False
+            # elif move == "o":
+            #     self.orders()
+        self.sem.release()
 
     def background_interface(self):
         self._background.append(threading.Thread(target=self.background_run))
         self._background.append(threading.Thread(target=self.background_control))
         for t in self._background:
+            #t.setDaemon(True)
             t.start()
         for t in self._background:
             t.join()
+
 
     def background_run(self):
         while self.switch:
@@ -393,7 +425,7 @@ class MyClient(CPhxFtdcTraderSpi):
             for f in self.strategy_list:
                 f()
             self.sem.release()
-            time.sleep(1.5)
+            time.sleep(0.1)
         print("All Strategy Ended")
 
 
@@ -419,7 +451,6 @@ class MyClient(CPhxFtdcTraderSpi):
         self.market_data_updated[ins_i] = False  # reset flag
         self.is_any_updated = False  # reset flag
 
-
     def get_obligate(self):
         """获取当前有做市义务的合约"""
         FutureData = self.md_list[self.ins2index['UBIQ']]
@@ -437,20 +468,6 @@ class MyClient(CPhxFtdcTraderSpi):
         # print('future price', FutureMidPrice)
         return ['C' + _ for _ in obligate_strike] + ['P' + _ for _ in obligate_strike]  # 返回义务合约代码列表
 
-    def get_price(self,ID):
-        """获取合约当前最优买卖价"""
-        best_price = {}
-        for ins_id in ID:
-            md_i = self.md_list[self.ins2index[ins_id]]
-            if len(md_i) > 2:
-                best_price[ins_id] = {'ask': md_i[-1].AskPrice1,
-                                      'bid': md_i[-1].BidPrice1,
-                                      'spread': md_i[-1].AskPrice1 - md_i[-1].BidPrice1,
-                                      'mid_price': 0.5 * (md_i[-1].AskPrice1 + md_i[-1].BidPrice1)}
-            else:
-                best_price[ins_id] = {'ask': 0, 'bid': 0, 'spread': 0}
-        return best_price  # 返回一个dictionary
-
     def _get_price(self,ID_list):
         """获取合约当前最优买卖价"""
         best_price = {}
@@ -466,7 +483,6 @@ class MyClient(CPhxFtdcTraderSpi):
             else:
                 best_price[ins_id] = {'ask': 0, 'ask_vol': 0, 'bid': 0, 'bid_vol': 0, 'spread': 0, 'mid_price': 0}
         return best_price  # 返回一个dictionary
-
 
     def max_spread(self,ask_price):
         """计算义务合约最大有效价差"""
@@ -517,6 +533,7 @@ class MyClient(CPhxFtdcTraderSpi):
                     return price
 
         # 以下为策略主体
+
     def parity(self):
         #print("Running Parity")
         ttm = self.game_status.CurrGameCycleLeftTime / 900
@@ -600,6 +617,7 @@ class MyClient(CPhxFtdcTraderSpi):
                     p_B = self.md_list[self.ins2index[ID_B]][-1].BidPrice1
                     p_C = self.md_list[self.ins2index[ID_C]][-1].AskPrice1
                     [s_A, s_B, s_C] = [int(strikes[i][1:]) for i in [ind-2,ind-1,ind]]
+                    # Convexity Violated
                     if ((p_C-p_B)/(s_C-s_B))<((p_B-p_A)/(s_B-s_A)):
                         vol=min(100,min(self.md_list[self.ins2index[ID_A]][-1].AskVolume1,
                                         self.md_list[self.ins2index[ID_B]][-1].BidVolume1,
@@ -613,6 +631,7 @@ class MyClient(CPhxFtdcTraderSpi):
                         om_B = self.ins2om[ID_B]
                         order = om_B.place_market_order(self.next_order_ref(), PHX_FTDC_D_Sell, PHX_FTDC_OF_Open,vol)
                         self.send_input_order(order)
+
     def deep(self):
         deep_out_put = ['P056','P058','P060','P062','P064','P052','P054']
         deep_out_call = ['C150', 'C146', 'C142','C138','C134','C130','C126']
@@ -622,26 +641,46 @@ class MyClient(CPhxFtdcTraderSpi):
                                                                      PHX_FTDC_OF_Open, 100)
             self.send_input_order(order_sell_deep)
 
-    def clear(self):
+    def clearposition(self):
+        print('Now to clear all position\n')
+        print('Check position closeable:\n')
         for om in self.ins2om.values():
-            target = int(om.longOpenPosition / 100)
-            for _ in range(target):
-                order = om.place_market_order(self.next_order_ref(), PHX_FTDC_D_Sell, PHX_FTDC_OF_Close, 100)
+            print(om.instrument_id)
+            print('long closeable:', om.get_long_position_closeable())
+            print('short closeable:', om.get_short_position_closeable())
+        """撤掉所有未成交订单"""
+        for om in self.ins2om.values():
+            bids, asks = om.get_untraded_orders()
+            for order in bids:
+                self.send_cancel_order(order)
+            for order in asks:
+                self.send_cancel_order(order)
+        """强行市价平仓所有仓位"""
+        for om in self.ins2om.values():
+            my_pos = om.get_long_position_closeable()
+            if my_pos > 0:
+                order = om.place_market_order(self.next_order_ref(), PHX_FTDC_D_Sell, PHX_FTDC_OF_Close, my_pos)
                 self.send_input_order(order)
-            target = int(om.shortOpenPosition / 100)
-            for _ in range(target):
-                order = om.place_market_order(self.next_order_ref(), PHX_FTDC_D_Buy, PHX_FTDC_OF_Close, 100)
+        for om in self.ins2om.values():
+            my_pos = om.get_long_position_closeable()
+            if my_pos > 0:
+                order = om.place_market_order(self.next_order_ref(), PHX_FTDC_D_Buy, PHX_FTDC_OF_Close, my_pos)
                 self.send_input_order(order)
+        """检查是否已经清仓完毕"""
+        for om in self.ins2om.values():
+            print('long closeable:', om.get_long_position_closeable())
+            print('short closeable:', om.get_short_position_closeable())
 
     def market_making(self):
         # # MyStrategy
         #print("Running MM")
-        obligateID = self.get_obligate()  # 当前有做市义务的合约ID列表
+         # 当前有做市义务的合约ID列表
         # print('Instrument with obligation\n', obligateID)
-        obligate_price =self.get_price(obligateID)  # 获取当前义务合约买卖价及价差,dictionary
+        self.obligateID = self.get_obligate()
+        obligate_price =self._get_price(self.obligateID)  # 获取当前义务合约买卖价及价差,dictionary
         # print('the price are:\n', obligate_price)
 
-        for insID in obligateID:
+        for insID in self.obligateID:
             MaxSpread = self.max_spread(obligate_price[insID]['ask'])
 
             if obligate_price[insID]['ask']:  # 当前市场订单非空
@@ -771,24 +810,34 @@ if __name__ == '__main__':
         elif action == 'account':
             client.check_account()
         elif action == 'order':
-            client.orders()
+             client._get_order()
+        # elif action == 'trade':
+        #     client.trades()
+        # elif action == 'margin':
+        #     client.check_margin()
         elif action == 'instrument':
             ins = client.get_instruments()
             # TBD
         elif action == 'clear':
             pass
         elif action == "run":
+
             strgy = input("Which strategy do you wish to apply?")
             #Add Strategy
-            #client.background_add(client.parity)
-            client.background_add(client.deep)
-            client.background_add(client.new_strat)
+            #client.background_add(client.background_control)
+            client.background_add(client.parity)
+            #client.background_add(client.deep)
+            #client.background_add(client.new_strat)
             client.background_add(client.market_making)
+            signal.signal(signal.SIGQUIT, client.background_handle)
             client.switch = True
             print("Start Trading")
-            client.background_interface()
-            #Add Control Thread
-
+           #client.background_interface()
+            try:
+                client.background_interface()
+    #Add Control Thread
+            except:
+                break
         elif action == 'out':
             client.ReqUserLogout()
         else:
@@ -796,4 +845,3 @@ if __name__ == '__main__':
     else:
         print("init failed")
     print('Finished')
-
